@@ -5,25 +5,15 @@ pipeline {
     environment {
         IMAGE_NAME = 'ajaydhadi95/flightfinder-frontend'
         IMAGE_TAG  = "${BUILD_NUMBER}"
+        FRONTEND_EC2 = '13.200.254.41'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                checkout scm
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
-                sh 'npm ci'
-            }
-        }
-
-        stage('Build React App') {
-            steps {
-                sh 'npm run build'
+                git branch: 'main',
+                    url: 'https://github.com/ajaydhadi95-gif/-FlightFinder-frontend-React.git'
             }
         }
 
@@ -43,6 +33,7 @@ pipeline {
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
                 ]) {
+
                     sh '''
                         echo "$DOCKER_PASSWORD" | docker login \
                         -u "$DOCKER_USERNAME" \
@@ -54,15 +45,51 @@ pipeline {
                 }
             }
         }
+
+        stage('Deploy to Frontend EC2') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'frontend-ec2-ssh',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+
+                    sh """
+                        ssh -o StrictHostKeyChecking=no \
+                            -i "\$SSH_KEY" \
+                            "\$SSH_USER@${FRONTEND_EC2}" '
+                            
+                            docker pull ${IMAGE_NAME}:${IMAGE_TAG}
+
+                            docker stop flightfinder-frontend || true
+
+                            docker rm flightfinder-frontend || true
+
+                            docker run -d \
+                                --restart unless-stopped \
+                                --name flightfinder-frontend \
+                                -p 80:80 \
+                                ${IMAGE_NAME}:${IMAGE_TAG}
+
+                            docker ps
+                        '
+                    """
+                }
+            }
+        }
     }
 
     post {
+
         success {
-            echo 'FlightFinder Frontend CI/CD completed successfully!'
+            echo 'FlightFinder Frontend deployed successfully!'
         }
 
         failure {
-            echo 'FlightFinder Frontend CI/CD failed!'
+            echo 'FlightFinder Frontend deployment failed!'
         }
     }
 }
+
