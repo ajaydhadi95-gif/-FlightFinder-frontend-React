@@ -472,9 +472,9 @@ This test is important before troubleshooting the Jenkins pipeline.
 
 # 16. Jenkins Pipeline
 
-Use the following Jenkinsfile:
 
-```groovy
+
+
 pipeline {
 
     agent any
@@ -567,7 +567,7 @@ pipeline {
         }
     }
 }
-```
+
 
 ---
 
