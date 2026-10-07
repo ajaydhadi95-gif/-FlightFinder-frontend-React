@@ -1,4 +1,4 @@
-# FlightFinder Frontend — CI/CD Deployment Runbook
+# FlightFinder Frontend —  AWS 3-Tier CI/CD Deployment Runbook
 
 ![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED?logo=docker&logoColor=white)
 ![Jenkins](https://img.shields.io/badge/Jenkins-CI%2FCD-D24939?logo=jenkins&logoColor=white)
