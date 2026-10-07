@@ -5,7 +5,7 @@ pipeline {
     environment {
         IMAGE_NAME = 'ajaydhadi95/flightfinder-frontend'
         IMAGE_TAG  = "${BUILD_NUMBER}"
-        FRONTEND_EC2 = '13.200.254.41'
+        FRONTEND_EC2 = '65.2.171.100'
     }
 
     stages {
