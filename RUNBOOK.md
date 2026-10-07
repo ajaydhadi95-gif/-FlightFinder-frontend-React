@@ -1,361 +1,194 @@
-# FlightFinder Frontend
+# FlightFinder Frontend — CI/CD Deployment Runbook
 
-## AWS + Jenkins + Docker + Docker Hub CI/CD Deployment Runbook
+![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED?logo=docker&logoColor=white)
+![Jenkins](https://img.shields.io/badge/Jenkins-CI%2FCD-D24939?logo=jenkins&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-EC2-FF9900?logo=amazonaws&logoColor=white)
+![Nginx](https://img.shields.io/badge/Nginx-Reverse%20Proxy-009639?logo=nginx&logoColor=white)
+![React](https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=black)
 
----
+<p align="center">
+  <img src="docs/images/flightfinder-demo.gif" alt="FlightFinder demo: push to GitHub, Jenkins pipeline, live deployment" width="800">
+</p>
 
-## 1. Purpose
-
-This runbook explains how to build, containerize, push, and deploy the **FlightFinder React frontend** using:
-
-* GitHub
-* Jenkins
-* Docker
-* Docker Hub
-* AWS EC2
-* Nginx
-* SSH
-
-The objective is to automate frontend deployment so that Jenkins can build a new Docker image and deploy it to the frontend EC2 server.
+> **Document type:** Operations runbook
+> **Scope:** Frontend build, release, verification, rollback, troubleshooting
+> **Audience:** DevOps engineers, reviewers, interviewers
 
 ---
 
-# 2. Architecture
+## Table of Contents
 
-```text
-Developer
-    |
-    | Git Push
-    ↓
-GitHub
-    |
-    ↓
-Jenkins EC2
-    |
-    | Checkout
-    | Docker Build
-    | Docker Push
-    ↓
-Docker Hub
-    |
-    | Docker Pull
-    ↓
-Frontend EC2
-    |
-    ↓
-Docker Container
-    |
-    ↓
-Nginx
-    |
-    ↓
-React Application
-    |
-    ↓
-Port 80
-```
+1. [Project Summary](#1-project-summary)
+2. [Architecture](#2-architecture)
+3. [Request Flow](#3-request-flow)
+4. [CI/CD Pipeline](#4-cicd-pipeline)
+5. [Environment Reference](#5-environment-reference)
+6. [Container Build](#6-container-build)
+7. [Nginx Reverse Proxy](#7-nginx-reverse-proxy)
+8. [Jenkins Configuration](#8-jenkins-configuration)
+9. [Jenkinsfile](#9-jenkinsfile)
+10. [Deployment Procedure](#10-deployment-procedure)
+11. [Verification](#11-verification)
+12. [Rollback](#12-rollback)
+13. [Troubleshooting](#13-troubleshooting)
+14. [Security Notes](#14-security-notes)
+15. [Checklists](#15-checklists)
+16. [Project Explanation](#16-project-explanation)
 
 ---
 
-# 3. Project Components
+## 1. Project Summary
 
-| Component  | Purpose                      |
-| ---------- | ---------------------------- |
-| GitHub     | Source code repository       |
-| Jenkins    | CI/CD automation             |
-| Docker     | Application containerization |
-| Docker Hub | Docker image registry        |
-| AWS EC2    | Frontend deployment server   |
-| Nginx      | Production web server        |
-| SSH        | Jenkins-to-EC2 communication |
-| React/Vite | Frontend application         |
+FlightFinder is a three-tier application on AWS. This runbook covers the **frontend** (React + Vite), which is built into a Docker image, published to Docker Hub, and deployed by Jenkins to a public EC2 instance running Nginx.
+
+| Tier | Technology | Location | Port |
+| --- | --- | --- | --- |
+| Frontend | React (Vite), Nginx, Docker | Public subnet, EC2 | 80 |
+| Backend | Spring Boot (Java 21) | Private subnet, EC2 | 8080 |
+| Database | RDS MySQL | Private subnet | 3306 |
+
+**Design goal:** only the frontend is exposed to the internet. Backend and database stay private; Nginx proxies `/api/*` to the backend.
 
 ---
 
-# 4. Environment Details
+## 2. Architecture
 
-### Frontend Repository
+```mermaid
+flowchart TD
+    U[User / Browser] -->|HTTP :80| FE
 
-```text
-https://github.com/ajaydhadi95-gif/-FlightFinder-frontend-React.git
-```
+    subgraph Public Subnet
+        FE[Frontend EC2<br/>Docker + Nginx]
+    end
 
-Branch:
+    subgraph Private Subnet
+        BE[Backend EC2<br/>Spring Boot :8080]
+        DB[(RDS MySQL :3306)]
+    end
 
-```text
-main
-```
-
-### Docker Image
-
-```text
-ajaydhadi95/flightfinder-frontend
-```
-
-Example:
-
-```text
-ajaydhadi95/flightfinder-frontend:4
-```
-
-### Frontend EC2
-
-Public IP:
-
-```text
-13.200.254.41
-```
-
-Private IP:
-
-```text
-10.0.1.233
-```
-
-Application URL:
-
-```text
-http://13.200.254.41
-```
-
-### Application Port
-
-```text
-80
+    FE -->|/api/* proxy_pass :8080| BE
+    BE -->|JDBC :3306| DB
 ```
 
 ---
 
-# 5. Prerequisites
+## 3. Request Flow
 
-## 5.1 Jenkins EC2
+How a live user request enters, is served, and returns.
 
-The Jenkins server should have:
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant N as Nginx (Frontend EC2)
+    participant S as Spring Boot (Backend EC2)
+    participant D as RDS MySQL
+
+    B->>N: GET / (HTTP :80)
+    N-->>B: index.html + JS/CSS (React build)
+    B->>N: GET /api/flights
+    N->>S: proxy_pass http://BACKEND_PRIVATE_IP:8080/api/flights
+    S->>D: SELECT (port 3306)
+    D-->>S: rows
+    S-->>N: JSON
+    N-->>B: JSON
+```
+
+| Step | Component | Action |
+| --- | --- | --- |
+| 1 | Browser | Requests the site on port 80 |
+| 2 | Nginx | Serves static React files from `/usr/share/nginx/html` |
+| 3 | React | Calls the API with relative paths such as `/api/flights` |
+| 4 | Nginx | Matches `location /api/` and forwards to the private backend |
+| 5 | Spring Boot | Processes the request and queries RDS |
+| 6 | Response | Returns along the same path; the backend IP is never exposed |
+
+---
+
+## 4. CI/CD Pipeline
+
+```mermaid
+flowchart LR
+    A[Developer<br/>git push] --> B[GitHub<br/>main]
+    B --> C[Jenkins]
+    C --> D[Checkout]
+    D --> E[Docker Build]
+    E --> F[Docker Push]
+    F --> G[(Docker Hub)]
+    G --> H[SSH to Frontend EC2]
+    H --> I[Pull image]
+    I --> J[Replace container]
+    J --> K[Nginx serves React]
+```
+
+| Stage | Description |
+| --- | --- |
+| Checkout | Pull `main` from GitHub |
+| Docker Build | Multi-stage build; tag `:<BUILD_NUMBER>` and `:latest` |
+| Docker Push | Push both tags to Docker Hub |
+| Deploy | SSH to frontend EC2, pull new tag, stop and remove old container, run new one |
+
+---
+
+## 5. Environment Reference
+
+| Item | Value |
+| --- | --- |
+| Repository | `https://github.com/ajaydhadi95-gif/-FlightFinder-frontend-React.git` |
+| Branch | `main` |
+| Docker image | `ajaydhadi95/flightfinder-frontend` |
+| Container name | `flightfinder-frontend` |
+| Frontend EC2 (public IP) | `13.200.254.41` |
+| Frontend EC2 (private IP) | `10.0.1.233` |
+| Backend EC2 (private IP) | `10.0.11.171` |
+| SSH user | `ubuntu` |
+| Jenkins credentials | `dockerhub-credentials`, `frontend-ec2-ssh` |
+| Site URL | `http://13.200.254.41` |
+
+> **Note:** the image name must be identical in the Jenkinsfile, Docker Hub, and every manual command. Use the Jenkinsfile value as the source of truth.
+
+Repository layout:
 
 ```text
-Java 21
-Git
-Docker
-AWS CLI
-Jenkins
-```
-
-Verify:
-
-```bash
-java -version
-```
-
-```bash
-git --version
-```
-
-```bash
-docker --version
-```
-
-```bash
-aws --version
-```
-
-Check Jenkins:
-
-```bash
-sudo systemctl status jenkins
-```
-
-Jenkins should be:
-
-```text
-active (running)
+frontend/
+├── src/
+├── public/
+├── package.json
+├── package-lock.json
+├── Dockerfile
+├── nginx.conf
+├── .dockerignore
+└── Jenkinsfile
 ```
 
 ---
 
-# 6. Verify Docker Access from Jenkins
+## 6. Container Build
 
-Jenkins must be able to execute Docker commands.
-
-Run:
-
-```bash
-sudo -u jenkins docker ps
-```
-
-If Docker information is displayed, Jenkins can access Docker.
-
-If permission is denied:
-
-```bash
-sudo usermod -aG docker jenkins
-```
-
-Restart Jenkins:
-
-```bash
-sudo systemctl restart jenkins
-```
-
-Then verify again:
-
-```bash
-sudo -u jenkins docker ps
-```
-
----
-
-# 7. Frontend EC2 Setup
-
-The frontend EC2 instance should have Docker installed.
-
-Verify:
-
-```bash
-docker --version
-```
-
-Check Docker:
-
-```bash
-sudo systemctl status docker
-```
-
-Enable Docker:
-
-```bash
-sudo systemctl enable docker
-```
-
-Start Docker:
-
-```bash
-sudo systemctl start docker
-```
-
----
-
-# 8. Frontend Security Group
-
-The frontend EC2 security group should allow:
-
-| Protocol | Port | Source                      | Purpose           |
-| -------- | ---: | --------------------------- | ----------------- |
-| SSH      |   22 | Jenkins/network as required | Remote deployment |
-| HTTP     |   80 | Internet                    | Website access    |
-
-For production, SSH should preferably be restricted to the Jenkins server's network/security design rather than allowing the entire internet.
-
----
-
-# 9. Dockerfile
-
-The project uses a multi-stage Dockerfile.
+Multi-stage `Dockerfile`: Node builds the app, Nginx serves it.
 
 ```dockerfile
-# Build stage
-FROM node:22-alpine AS build
-
+FROM node:22-alpine AS builder
 WORKDIR /app
-
 COPY package*.json ./
-
 RUN npm ci
-
 COPY . .
-
 RUN npm run build
 
-# Production stage
 FROM nginx:alpine
-
-COPY --from=build /app/dist /usr/share/nginx/html
-
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]
 ```
 
----
+| Instruction | Purpose |
+| --- | --- |
+| `npm ci` | Reproducible dependency install from the lockfile |
+| `npm run build` | Produces the production bundle in `/app/dist` |
+| `COPY --from=builder` | Copies only the build output; Node is not in the final image |
+| `COPY nginx.conf` | Adds SPA routing and the `/api/` proxy |
 
-# 10. Dockerfile Explanation
-
-## Build Stage
-
-```dockerfile
-FROM node:22-alpine AS build
-```
-
-Uses Node.js to build the React application.
-
-```dockerfile
-WORKDIR /app
-```
-
-Creates the application working directory.
-
-```dockerfile
-COPY package*.json ./
-```
-
-Copies package files.
-
-```dockerfile
-RUN npm ci
-```
-
-Installs the required dependencies.
-
-```dockerfile
-COPY . .
-```
-
-Copies the application source code.
-
-```dockerfile
-RUN npm run build
-```
-
-Creates the production React build.
-
-The output is:
-
-```text
-dist/
-```
-
----
-
-## Production Stage
-
-```dockerfile
-FROM nginx:alpine
-```
-
-Uses lightweight Nginx.
-
-```dockerfile
-COPY --from=build /app/dist /usr/share/nginx/html
-```
-
-Copies the React production files into the Nginx web directory.
-
-```dockerfile
-EXPOSE 80
-```
-
-Documents that the application uses port 80.
-
-```dockerfile
-CMD ["nginx", "-g", "daemon off;"]
-```
-
-Runs Nginx in the foreground so Docker can manage the process.
-
----
-
-# 11. .dockerignore
-
-Recommended `.dockerignore`:
+`.dockerignore`:
 
 ```text
 node_modules
@@ -367,126 +200,87 @@ Dockerfile
 .dockerignore
 ```
 
-This prevents unnecessary files from being copied into the Docker build context.
+---
+
+## 7. Nginx Reverse Proxy
+
+```nginx
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://10.0.11.171:8080;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+- `try_files $uri /index.html` lets React Router handle client-side routes such as `/flights`.
+- `/api/` forwards to the private backend, so the browser never needs its address.
+
+React code must use **relative** API paths:
+
+```javascript
+fetch("/api/flights")                          // correct
+fetch("http://10.0.11.171:8080/api/flights")   // wrong: private IP unreachable
+fetch("http://localhost:8080/api/flights")     // wrong: resolves to the user's machine
+```
+
+> **Pre-release check:** confirm `10.0.11.171` is still the backend private IP (`hostname -I` on the backend). If it changed, update `nginx.conf` **before** building. For production, prefer a stable private DNS name or internal load balancer over a hard-coded IP.
 
 ---
 
-# 12. Jenkins Credentials
+## 8. Jenkins Configuration
 
-Two Jenkins credentials are required.
-
-## Credential 1 – Docker Hub
-
-Credential ID:
-
-```text
-dockerhub-credentials
-```
-
-Type:
-
-```text
-Username with password
-```
-
-Username:
-
-```text
-ajaydhadi95
-```
-
-Password:
-
-```text
-Docker Hub Access Token
-```
-
-Do not store or expose the Docker Hub password directly inside the Jenkinsfile.
-
----
-
-# 13. Credential 2 – Frontend EC2 SSH
-
-Credential ID:
-
-```text
-frontend-ec2-ssh
-```
-
-Type:
-
-```text
-SSH Username with private key
-```
-
-Username:
-
-```text
-ubuntu
-```
-
-The private key should be stored securely inside Jenkins Credentials.
-
-Never put the private SSH key directly inside the Jenkinsfile or GitHub repository.
-
----
-
-# 14. SSH Configuration
-
-Jenkins generates an SSH key pair:
+**Jenkins server:** Java 21, Git, Docker, AWS CLI, Jenkins.
 
 ```bash
-ssh-keygen -t ed25519 -C "jenkins-frontend-deploy"
+sudo systemctl status jenkins
+sudo -u jenkins docker ps
 ```
 
-The key files are:
+**Credentials**
 
-```text
-~/.ssh/id_ed25519
-~/.ssh/id_ed25519.pub
-```
+| ID | Type | Notes |
+| --- | --- | --- |
+| `dockerhub-credentials` | Username with password | Password is a Docker Hub **access token** |
+| `frontend-ec2-ssh` | SSH username with private key | Username `ubuntu`; full key including BEGIN/END lines |
 
-The public key is added to the frontend EC2:
+**SSH trust:** the Jenkins key pair's public key (`~/.ssh/id_ed25519.pub`) is in `~/.ssh/authorized_keys` on the frontend EC2. Never commit private keys to Git.
 
-```text
-~/.ssh/authorized_keys
-```
-
-The private key is stored in Jenkins credentials.
-
----
-
-# 15. Test SSH Before Jenkins Deployment
-
-From Jenkins EC2:
+Manual test from the Jenkins server:
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 ubuntu@13.200.254.41
 ```
 
-If SSH works, Jenkins should be able to connect using the same key.
-
-This test is important before troubleshooting the Jenkins pipeline.
-
 ---
 
-# 16. Jenkins Pipeline
+## 9. Jenkinsfile
 
-
-
-
+```groovy
 pipeline {
-
     agent any
 
     environment {
-        IMAGE_NAME = 'ajaydhadi95/flightfinder-frontend'
-        IMAGE_TAG  = "${BUILD_NUMBER}"
+        IMAGE_NAME   = 'ajaydhadi95/flightfinder-frontend'
+        IMAGE_TAG    = "${BUILD_NUMBER}"
         FRONTEND_EC2 = '13.200.254.41'
     }
 
     stages {
-
         stage('Checkout') {
             steps {
                 git branch: 'main',
@@ -503,19 +297,14 @@ pipeline {
 
         stage('Docker Push') {
             steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USERNAME',
-                        passwordVariable: 'DOCKER_PASSWORD'
-                    )
-                ]) {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-credentials',
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD')]) {
                     sh '''
                         echo "$DOCKER_PASSWORD" | docker login \
-                        -u "$DOCKER_USERNAME" \
-                        --password-stdin
+                        -u "$DOCKER_USERNAME" --password-stdin
                     '''
-
                     sh "docker push ${IMAGE_NAME}:${IMAGE_TAG}"
                     sh "docker push ${IMAGE_NAME}:latest"
                 }
@@ -524,30 +313,22 @@ pipeline {
 
         stage('Deploy to Frontend EC2') {
             steps {
-                withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'frontend-ec2-ssh',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    )
-                ]) {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'frontend-ec2-ssh',
+                    keyFileVariable: 'SSH_KEY',
+                    usernameVariable: 'SSH_USER')]) {
                     sh """
                         ssh -o StrictHostKeyChecking=no \
                             -i "\$SSH_KEY" \
                             "\$SSH_USER@${FRONTEND_EC2}" '
-                            
                             docker pull ${IMAGE_NAME}:${IMAGE_TAG}
-
                             docker stop flightfinder-frontend || true
-
                             docker rm flightfinder-frontend || true
-
                             docker run -d \
                                 --restart unless-stopped \
                                 --name flightfinder-frontend \
                                 -p 80:80 \
                                 ${IMAGE_NAME}:${IMAGE_TAG}
-
                             docker ps
                         '
                     """
@@ -557,641 +338,135 @@ pipeline {
     }
 
     post {
-
-        success {
-            echo 'FlightFinder Frontend deployed successfully!'
-        }
-
-        failure {
-            echo 'FlightFinder Frontend deployment failed!'
-        }
+        success { echo 'FlightFinder Frontend deployed successfully!' }
+        failure { echo 'FlightFinder Frontend deployment failed!' }
     }
 }
-
-
----
-
-# 17. Pipeline Stage 1 – Checkout
-
-Jenkins checks out the code from GitHub.
-
-```text
-GitHub
-   ↓
-Jenkins Workspace
-```
-
-The important configuration is:
-
-```groovy
-git branch: 'main',
-    url: 'https://github.com/ajaydhadi95-gif/-FlightFinder-frontend-React.git'
 ```
 
 ---
 
-# 18. Pipeline Stage 2 – Docker Build
+## 10. Deployment Procedure
 
-Jenkins builds the Docker image:
-
-```bash
-docker build -t ajaydhadi95/flightfinder-frontend:${BUILD_NUMBER} .
-```
-
-For Build #4:
-
-```text
-ajaydhadi95/flightfinder-frontend:4
-```
-
-The image is also tagged as:
-
-```text
-ajaydhadi95/flightfinder-frontend:latest
-```
+1. Commit and push to `main`.
+2. In Jenkins, run the pipeline (or let the trigger start it).
+3. Watch the four stages: Checkout, Docker Build, Docker Push, Deploy.
+4. Confirm `SUCCESS`, then run the [verification](#11-verification) steps.
 
 ---
 
-# 19. Pipeline Stage 3 – Docker Push
+## 11. Verification
 
-Jenkins logs in to Docker Hub:
-
-```bash
-echo "$DOCKER_PASSWORD" | docker login \
--u "$DOCKER_USERNAME" \
---password-stdin
-```
-
-Then pushes:
+On the frontend EC2:
 
 ```bash
-docker push ajaydhadi95/flightfinder-frontend:4
+docker ps                                           # flightfinder-frontend, 0.0.0.0:80->80/tcp
+docker exec flightfinder-frontend nginx -t          # syntax is ok / test is successful
+docker exec flightfinder-frontend cat /etc/nginx/conf.d/default.conf
+docker logs flightfinder-frontend
 ```
 
-and:
+From any machine:
 
 ```bash
-docker push ajaydhadi95/flightfinder-frontend:latest
+curl http://13.200.254.41/api/test      # FlightFinder Backend is running!
+curl http://13.200.254.41/api/flights   # JSON array
 ```
+
+Then open `http://13.200.254.41` and confirm the UI loads.
 
 ---
 
-# 20. Pipeline Stage 4 – Deployment
+## 12. Rollback
 
-Jenkins connects to the frontend EC2 using SSH.
-
-```text
-Jenkins EC2
-     |
-     | SSH
-     ↓
-Frontend EC2
-```
-
-Then it pulls the new image:
+Every build produces a versioned image. To revert from build 5 to build 4:
 
 ```bash
 docker pull ajaydhadi95/flightfinder-frontend:4
-```
-
-Stops the old container:
-
-```bash
-docker stop flightfinder-frontend || true
-```
-
-Removes it:
-
-```bash
-docker rm flightfinder-frontend || true
-```
-
-Starts the new container:
-
-```bash
-docker run -d \
-    --restart unless-stopped \
-    --name flightfinder-frontend \
-    -p 80:80 \
-    ajaydhadi95/flightfinder-frontend:4
-```
-
----
-
-# 21. Verify Deployment
-
-SSH into the frontend EC2:
-
-```bash
-ssh ubuntu@13.200.254.41
-```
-
-Check running containers:
-
-```bash
-docker ps
-```
-
-Expected:
-
-```text
-flightfinder-frontend
-```
-
-Check port mapping:
-
-```text
-0.0.0.0:80->80/tcp
-```
-
----
-
-# 22. Check Docker Image
-
-Run:
-
-```bash
-docker images
-```
-
-Expected:
-
-```text
-ajaydhadi95/flightfinder-frontend
-```
-
-You should see the build-number tag:
-
-```text
-4
-```
-
-and:
-
-```text
-latest
-```
-
----
-
-# 23. Check Container Logs
-
-Run:
-
-```bash
-docker logs flightfinder-frontend
-```
-
-For real-time logs:
-
-```bash
-docker logs -f flightfinder-frontend
-```
-
----
-
-# 24. Test the Application
-
-Open the browser:
-
-```text
-http://13.200.254.41
-```
-
-Expected result:
-
-```text
-FlightFinder React Application
-```
-
-If the application loads successfully, the frontend deployment is complete.
-
----
-
-# 25. Troubleshooting
-
-## Problem 1 – Jenkins Cannot Run Docker
-
-Error:
-
-```text
-permission denied while trying to connect to the Docker daemon
-```
-
-Check:
-
-```bash
-sudo -u jenkins docker ps
-```
-
-Fix:
-
-```bash
-sudo usermod -aG docker jenkins
-```
-
-Restart:
-
-```bash
-sudo systemctl restart jenkins
-```
-
-Test again:
-
-```bash
-sudo -u jenkins docker ps
-```
-
----
-
-# 26. Problem 2 – SSH Public Key Error
-
-Error:
-
-```text
-Permission denied (publickey)
-```
-
-Check:
-
-```bash
-ssh -i ~/.ssh/id_ed25519 ubuntu@13.200.254.41
-```
-
-Verify that the public key exists on the frontend EC2:
-
-```bash
-cat ~/.ssh/authorized_keys
-```
-
-Verify the Jenkins credential:
-
-```text
-frontend-ec2-ssh
-```
-
-Make sure the complete private key is stored correctly.
-
----
-
-# 27. Problem 3 – libcrypto Error
-
-Error:
-
-```text
-Load key "****": error in libcrypto
-```
-
-Possible cause:
-
-```text
-Incorrect or corrupted private key in Jenkins Credentials.
-```
-
-Solution:
-
-1. Verify the private key locally.
-2. Make sure the entire key is copied.
-3. Check the BEGIN/END lines.
-4. Update the Jenkins credential.
-5. Test SSH manually.
-6. Run the Jenkins pipeline again.
-
----
-
-# 28. Problem 4 – Port 80 Already in Use
-
-Check:
-
-```bash
-sudo ss -tulpn | grep :80
-```
-
-Or:
-
-```bash
-docker ps
-```
-
-If another container is using port 80, stop/remove it:
-
-```bash
-docker stop <container>
-```
-
-Then:
-
-```bash
-docker rm <container>
-```
-
-Start the FlightFinder container again.
-
----
-
-# 29. Problem 5 – Container Is Not Running
-
-Check:
-
-```bash
-docker ps -a
-```
-
-Then:
-
-```bash
-docker logs flightfinder-frontend
-```
-
-The logs normally tell us why the container stopped.
-
----
-
-# 30. Problem 6 – Website Not Accessible
-
-Check the EC2 security group.
-
-HTTP must allow:
-
-```text
-TCP 80
-```
-
-Then check Docker:
-
-```bash
-docker ps
-```
-
-Check port mapping:
-
-```text
-0.0.0.0:80->80/tcp
-```
-
-Check Nginx logs:
-
-```bash
-docker logs flightfinder-frontend
-```
-
----
-
-# 31. Rollback Procedure
-
-Because we use Jenkins build numbers as Docker tags, previous versions are available.
-
-Example:
-
-```text
-Version 3
-Version 4
-Version 5
-```
-
-If version 5 has a problem, deploy version 4.
-
-Pull:
-
-```bash
-docker pull ajaydhadi95/flightfinder-frontend:4
-```
-
-Stop the current container:
-
-```bash
 docker stop flightfinder-frontend
-```
-
-Remove it:
-
-```bash
 docker rm flightfinder-frontend
-```
-
-Start version 4:
-
-```bash
 docker run -d \
     --restart unless-stopped \
     --name flightfinder-frontend \
     -p 80:80 \
     ajaydhadi95/flightfinder-frontend:4
-```
-
-Verify:
-
-```bash
 docker ps
 ```
 
-This gives us a simple rollback mechanism.
+---
+
+## 13. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+| --- | --- | --- |
+| `permission denied ... Docker daemon` in Jenkins | `jenkins` user not in `docker` group | `sudo usermod -aG docker jenkins && sudo systemctl restart jenkins`, then `sudo -u jenkins docker ps` |
+| `Permission denied (publickey)` | Wrong key or missing `authorized_keys` entry | Test SSH manually; check `~/.ssh/authorized_keys`; check `frontend-ec2-ssh` |
+| `Load key ... error in libcrypto` | Malformed private key stored in Jenkins | Re-add the complete key with BEGIN/END lines; test manually; re-run |
+| Website does not open | Port 80 blocked or container down | Allow TCP 80 in the security group; `docker ps`; `sudo ss -tulpn \| grep :80`; `docker logs flightfinder-frontend` |
+| `/api/*` fails | Nginx config or backend unreachable | `curl /api/test`; `nginx -t`; from frontend EC2 run `curl http://10.0.11.171:8080/api/test`; check backend app, security group, IP, port 8080, routing |
+| Page refresh on `/flights` gives 404 | Missing SPA fallback | Ensure `try_files $uri /index.html;` is present |
 
 ---
 
-# 32. Successful Deployment Example
+## 14. Security Notes
 
-The successful Jenkins deployment was:
+**Intended security-group flow**
 
-```text
-Jenkins Build: #4
+| Resource | Port | Allowed source |
+| --- | --- | --- |
+| Frontend EC2 | 80 | Internet |
+| Backend EC2 | 8080 | Frontend security group |
+| RDS MySQL | 3306 | Backend security group |
 
-Docker Image:
-ajaydhadi95/flightfinder-frontend:4
+Recommended hardening:
 
-Frontend EC2:
-13.200.254.41
-
-Container:
-flightfinder-frontend
-
-Port:
-80
-
-Result:
-Finished: SUCCESS
-```
+- Do not expose backend port 8080 to the internet.
+- Replace `StrictHostKeyChecking=no` with a pinned host key in `known_hosts`.
+- Use Docker Hub access tokens, never account passwords.
+- Add HTTPS (ACM with a load balancer, or Let's Encrypt on Nginx) in place of plain HTTP.
+- Replace the hard-coded backend IP with private DNS.
+- Prefer SSM over SSH for deployment where possible.
 
 ---
 
-# 33. Production Deployment Flow
+## 15. Checklists
 
-The final flow is:
+**Before deployment**
 
-```text
-Developer
-    |
-    | Git Push
-    ↓
-GitHub
-    |
-    ↓
-Jenkins EC2
-    |
-    ├── Checkout
-    |
-    ├── Docker Build
-    |
-    ├── Docker Tag
-    |
-    ├── Docker Push
-    ↓
-Docker Hub
-    |
-    ↓
-SSH
-    |
-    ↓
-Frontend EC2
-    |
-    ├── Docker Pull
-    |
-    ├── Stop Old Container
-    |
-    ├── Remove Old Container
-    |
-    └── Run New Container
-            |
-            ↓
-          Nginx
-            |
-            ↓
-       React Frontend
-```
+- [ ] GitHub code is up to date
+- [ ] `Dockerfile` and `nginx.conf` are correct
+- [ ] React uses relative `/api/` paths
+- [ ] Backend private IP in `nginx.conf` is current
+- [ ] Jenkins is running and can use Docker
+- [ ] Docker Hub and SSH credentials exist in Jenkins
+- [ ] Frontend EC2 is running; port 80 allowed
+- [ ] Backend port 8080 allows the frontend security group
+
+**After deployment**
+
+- [ ] Jenkins build is `SUCCESS`
+- [ ] Image pushed to Docker Hub
+- [ ] Container running on frontend EC2
+- [ ] `nginx -t` passes
+- [ ] Website loads
+- [ ] `/api/test` and `/api/flights` respond
 
 ---
 
-# 34. Operational Checklist
+## 16. Project Explanation
 
-Before deployment:
+**Short version**
 
-```text
-[ ] GitHub repository is accessible
-[ ] Jenkins is running
-[ ] Docker is running on Jenkins
-[ ] Jenkins can execute Docker
-[ ] Docker Hub credentials are configured
-[ ] Frontend EC2 is running
-[ ] Docker is running on frontend EC2
-[ ] Port 80 is allowed
-[ ] SSH connectivity is working
-[ ] Jenkins SSH credential is configured
-```
+> I built a CI/CD pipeline for the FlightFinder React frontend using GitHub, Jenkins, Docker, Docker Hub, and AWS EC2. On every release, Jenkins builds a multi-stage Docker image, pushes a versioned tag to Docker Hub, then connects to the public EC2 over SSH to replace the running container. Nginx serves the React app on port 80 and acts as a reverse proxy, forwarding `/api` requests to the Spring Boot backend in a private subnet, which talks to RDS MySQL. Only the frontend is internet-facing.
 
-After deployment:
+**Key talking points**
 
-```text
-[ ] Jenkins build SUCCESS
-[ ] Docker image pushed to Docker Hub
-[ ] New image pulled on frontend EC2
-[ ] Container is running
-[ ] Port 80 is mapped
-[ ] Docker logs are normal
-[ ] Website opens in browser
-```
+| Topic | Point |
+| --- | --- |
+| Why Docker | Consistent, repeatable deployments; no Node.js on the server |
+| Why multi-stage | Small final image containing only Nginx and static files |
+| Why a reverse proxy | Backend is private; the browser cannot reach it directly |
+| Why versioned tags | One-command rollback to any earlier build |
+| Why private backend and DB | Smaller attack surface; security groups chain frontend, backend, RDS |
 
----
-
-# 35. Interview Explanation
-
-If asked:
-
-**"Explain your CI/CD project."**
-
-Answer:
-
-> "I implemented a CI/CD pipeline for a React-based FlightFinder frontend. The source code is maintained in GitHub. Jenkins automatically checks out the code and builds a multi-stage Docker image. The React application is built using Node.js and the production files are served using Nginx. Jenkins pushes the versioned Docker image to Docker Hub and then connects to the frontend EC2 instance using SSH. On the EC2 server, Jenkins pulls the new image, stops the old container, removes it, and starts the new container on port 80. I use Jenkins build numbers as Docker image tags, which also allows me to roll back to a previous version if required."
-
----
-
-# 36. One-Line Project Summary
-
-> **"I automated the deployment of a React frontend using GitHub, Jenkins, Docker, Docker Hub, SSH, and AWS EC2, with Nginx serving the production application inside a Docker container."**
-
----
-
-# 37. Important Commands
-
-### Jenkins
-
-```bash
-sudo systemctl status jenkins
-```
-
-### Docker
-
-```bash
-docker ps
-docker ps -a
-docker images
-docker logs flightfinder-frontend
-docker logs -f flightfinder-frontend
-```
-
-### SSH
-
-```bash
-ssh -i ~/.ssh/id_ed25519 ubuntu@13.200.254.41
-```
-
-### Docker Pull
-
-```bash
-docker pull ajaydhadi95/flightfinder-frontend:4
-```
-
-### Docker Run
-
-```bash
-docker run -d \
-    --restart unless-stopped \
-    --name flightfinder-frontend \
-    -p 80:80 \
-    ajaydhadi95/flightfinder-frontend:4
-```
-
-### Browser Test
-
-```text
-http://13.200.254.41
-```
-
----
-
-# 38. Final Summary
-
-The complete implementation is:
-
-```text
-GitHub
-   ↓
-Jenkins
-   ↓
-Checkout
-   ↓
-Docker Build
-   ↓
-Docker Image
-   ↓
-Docker Hub
-   ↓
-SSH
-   ↓
-Frontend EC2
-   ↓
-Docker Pull
-   ↓
-Stop Old Container
-   ↓
-Remove Old Container
-   ↓
-Run New Container
-   ↓
-Nginx
-   ↓
-React Application
-   ↓
-Port 80
-```
-
-This provides an automated and repeatable frontend deployment process with versioned Docker images and a simple rollback strategy.
+**One line:** a GitHub-to-Jenkins-to-Docker pipeline deploys a React frontend on EC2 with Nginx, which securely proxies to a private Spring Boot backend.
