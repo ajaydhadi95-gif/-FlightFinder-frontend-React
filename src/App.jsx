@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { CITIES, searchFlights } from "./data";
 import "./App.css";
 
-   const API_BASE_URL = "/api/bookings";
+  const API_BASE_URL = "http://65.2.171.100:8080/api/bookings";
 
-const today = () => new Date().toISOString().slice(0, 10);
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
 const inr = (n) => `₹${n.toLocaleString("en-IN")}`;
 const hm = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
 const cityName = (code) => CITIES.find((c) => c.code === code)?.name ?? code;
