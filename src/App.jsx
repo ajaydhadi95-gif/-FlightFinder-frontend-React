@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { CITIES, searchFlights } from "./data";
 import "./App.css";
 
+const API_BASE_URL = "http://65.2.171.100:8080/api/bookings";
+
 const today = () => new Date().toISOString().slice(0, 10);
 const inr = (n) => `₹${n.toLocaleString("en-IN")}`;
 const hm = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
@@ -22,14 +24,6 @@ const POPULAR = [
   { from: "BOM", to: "BLR", emoji: "🌴", price: "₹3,000" },
 ];
 
-function loadBookings() {
-  try {
-    return JSON.parse(localStorage.getItem("ff_bookings")) ?? [];
-  } catch {
-    return [];
-  }
-}
-
 export default function App() {
   const [tab, setTab] = useState("search");
   const [form, setForm] = useState({
@@ -44,13 +38,25 @@ export default function App() {
   const [nonStop, setNonStop] = useState(false);
   const [airlineFilter, setAirlineFilter] = useState("All");
   const [selected, setSelected] = useState(null);
-  const [bookings, setBookings] = useState(loadBookings);
+  const [bookings, setBookings] = useState([]);
   const [confirmation, setConfirmation] = useState(null);
   const [error, setError] = useState("");
 
+  const fetchBookings = async () => {
+    try {
+      const response = await fetch(API_BASE_URL);
+      if (response.ok) {
+        const data = await response.json();
+        setBookings(data);
+      }
+    } catch (err) {
+      console.error("Error fetching bookings:", err);
+    }
+  };
+
   useEffect(() => {
-    localStorage.setItem("ff_bookings", JSON.stringify(bookings));
-  }, [bookings]);
+    fetchBookings();
+  }, []);
 
   const update = (key) => (e) => setForm({ ...form, [key]: e.target.value });
 
@@ -88,11 +94,12 @@ export default function App() {
   );
 
   const cheapestId = useMemo(
-    () => results && [...results].sort((a, b) => a.price - b.price)[0].id,
+    () => results && [...results].sort((a, b) => a.price - b.price)[0]?.id,
     [results]
   );
+  
   const fastestId = useMemo(
-    () => results && [...results].sort((a, b) => a.duration - b.duration)[0].id,
+    () => results && [...results].sort((a, b) => a.duration - b.duration)[0]?.id,
     [results]
   );
 
@@ -110,9 +117,9 @@ export default function App() {
       );
   }, [results, nonStop, airlineFilter, sortBy]);
 
-  const book = (passengerInfo) => {
+  const book = async (passengerInfo) => {
     const pax = Number(form.passengers);
-    const booking = {
+    const bookingPayload = {
       id: "FF" + Math.random().toString(36).slice(2, 8).toUpperCase(),
       flight: selected,
       passengers: pax,
@@ -120,12 +127,43 @@ export default function App() {
       ...passengerInfo,
       bookedAt: new Date().toISOString(),
     };
-    setBookings([booking, ...bookings]);
-    setSelected(null);
-    setConfirmation(booking);
+
+    try {
+      const response = await fetch(API_BASE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bookingPayload),
+      });
+
+      if (response.ok) {
+        const savedBooking = await response.json();
+        setSelected(null);
+        setConfirmation(savedBooking || bookingPayload);
+        fetchBookings();
+      } else {
+        alert("Booking database mein save nahi ho payi.");
+      }
+    } catch (err) {
+      console.error("API Error:", err);
+      alert("Backend API connection failure!");
+    }
   };
 
-  const cancel = (id) => setBookings(bookings.filter((b) => b.id !== id));
+  const cancel = async (id) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/${id}`, {
+        method: "DELETE",
+      });
+      if (response.ok) {
+        setBookings(bookings.filter((b) => b.id !== id));
+      } else {
+        fetchBookings();
+      }
+    } catch (err) {
+      console.error("Cancel failed:", err);
+      setBookings(bookings.filter((b) => b.id !== id));
+    }
+  };
 
   return (
     <div className="app">
@@ -156,7 +194,7 @@ export default function App() {
               <span>☁</span>
             </div>
             <h2>
-               <em>Book your flight with ease and comfort!</em>
+              <em>Book your flight with ease and comfort!</em>
             </h2>
             <p>Book your flight with ease and comfort!</p>
 
@@ -270,7 +308,7 @@ export default function App() {
                 {visible.map((f, i) => (
                   <div className="flight" key={f.id} style={{ animationDelay: `${i * 50}ms` }}>
                     <div className="airline">
-                      <span className="badge" style={{ background: AIRLINE_COLORS[f.airline] }}>
+                      <span className="badge" style={{ background: AIRLINE_COLORS[f.airline] || "#2b3a8c" }}>
                         {f.airline.slice(0, 2).toUpperCase()}
                       </span>
                       <div>
@@ -337,41 +375,41 @@ export default function App() {
             <div className="ticket" key={b.id}>
               <div className="ticket-main">
                 <div className="ticket-top">
-                  <span className="badge" style={{ background: AIRLINE_COLORS[b.flight.airline] }}>
-                    {b.flight.airline.slice(0, 2).toUpperCase()}
+                  <span className="badge" style={{ background: AIRLINE_COLORS[b.flight?.airline] || "#2b3a8c" }}>
+                    {(b.flight?.airline || "IN").slice(0, 2).toUpperCase()}
                   </span>
                   <div>
                     <strong>
-                      {cityName(b.flight.from)} → {cityName(b.flight.to)}
+                      {cityName(b.flight?.from || b.from)} → {cityName(b.flight?.to || b.to)}
                     </strong>
                     <small>
-                      {b.flight.airline} {b.flight.number} · {b.flight.date}
+                      {b.flight?.airline} {b.flight?.number} · {b.flight?.date}
                     </small>
                   </div>
                 </div>
                 <div className="ticket-info">
                   <div>
                     <small>Departure</small>
-                    <b>{b.flight.departure}</b>
+                    <b>{b.flight?.departure || "10:00"}</b>
                   </div>
                   <div>
                     <small>Arrival</small>
-                    <b>{b.flight.arrival}</b>
+                    <b>{b.flight?.arrival || "12:00"}</b>
                   </div>
                   <div>
                     <small>Passenger</small>
-                    <b>{b.name}</b>
+                    <b>{b.name || b.passengerName}</b>
                   </div>
                   <div>
                     <small>Seats</small>
-                    <b>{b.passengers}</b>
+                    <b>{b.passengers || b.seats}</b>
                   </div>
                 </div>
               </div>
               <div className="ticket-stub">
                 <small>Booking ID</small>
                 <strong>{b.id}</strong>
-                <b className="amount">{inr(b.total)}</b>
+                <b className="amount">{inr(b.total || b.price || 0)}</b>
                 <button className="danger" onClick={() => cancel(b.id)}>
                   Cancel
                 </button>
@@ -399,11 +437,11 @@ export default function App() {
               Booking ID: <strong>{confirmation.id}</strong>
             </p>
             <p>
-              {cityName(confirmation.flight.from)} → {cityName(confirmation.flight.to)} ·{" "}
-              {confirmation.flight.date}
+              {cityName(confirmation.flight?.from || confirmation.from)} → {cityName(confirmation.flight?.to || confirmation.to)} ·{" "}
+              {confirmation.flight?.date || confirmation.date}
             </p>
             <p className="total">
-              Total paid: <b>{inr(confirmation.total)}</b>
+              Total paid: <b>{inr(confirmation.total || confirmation.price || 0)}</b>
             </p>
             <button
               className="primary"
