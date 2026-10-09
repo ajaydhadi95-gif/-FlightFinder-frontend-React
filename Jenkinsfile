@@ -1,95 +1,118 @@
 pipeline {
+agent any
 
-    agent any
 
-    environment {
-        IMAGE_NAME = 'ajaydhadi95/flightfinder-frontend'
-        IMAGE_TAG  = "${BUILD_NUMBER}"
-        FRONTEND_EC2 = '65.2.171.100'
+environment {
+    AWS_REGION  = 'ap-south-1'
+    EKS_CLUSTER = 'devops-eks'
+    KUBECONFIG  = '/var/lib/jenkins/.kube/config'
+
+    IMAGE_NAME  = 'ajaydhadi95/booking_frontend'
+    IMAGE_TAG   = "${BUILD_NUMBER}"
+
+    APP_NAME    = 'booking-frontend'
+    SERVICE_NAME = 'booking-frontend-service'
+}
+
+stages {
+    stage('Checkout') {
+        steps {
+            git branch: 'main',
+                url: 'https://github.com/ajaydhadi95-gif/React_Fronend.git'
+        }
     }
 
-    stages {
-
-        stage('Checkout') {
-            steps {
-                git branch: 'main',
-                    url: 'https://github.com/ajaydhadi95-gif/-FlightFinder-frontend-React.git'
-            }
+    stage('Verify Project') {
+        steps {
+            sh '''
+                set -e
+                echo "Checking frontend files..."
+                test -f package.json
+                test -f Dockerfile
+                echo "Project files verified."
+            '''
         }
+    }
 
-        stage('Docker Build') {
-            steps {
-                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
-                sh "docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest"
-            }
+    stage('Build Docker Image') {
+        steps {
+            sh '''
+                set -e
+                docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
+            '''
         }
+    }
 
-        stage('Docker Push') {
-            steps {
-                withCredentials([
-                    usernamePassword(
-                        credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USERNAME',
-                        passwordVariable: 'DOCKER_PASSWORD'
-                    )
-                ]) {
+    stage('Push Image to Docker Hub') {
+        steps {
+            withCredentials([
+                usernamePassword(
+                    credentialsId: 'dockerhub-credentials',
+                    usernameVariable: 'DOCKERHUB_USER',
+                    passwordVariable: 'DOCKERHUB_TOKEN'
+                )
+            ]) {
+                sh '''
+                    set +x
+                    echo "$DOCKERHUB_TOKEN" |
+                      docker login -u "$DOCKERHUB_USER" --password-stdin
 
-                    sh '''
-                        echo "$DOCKER_PASSWORD" | docker login \
-                        -u "$DOCKER_USERNAME" \
-                        --password-stdin
-                    '''
-
-                    sh "docker push ${IMAGE_NAME}:${IMAGE_TAG}"
-                    sh "docker push ${IMAGE_NAME}:latest"
-                }
-            }
-        }
-
-        stage('Deploy to Frontend EC2') {
-            steps {
-                withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'frontend-ec2-ssh',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    )
-                ]) {
-
-                    sh """
-                        ssh -o StrictHostKeyChecking=no \
-                            -i "\$SSH_KEY" \
-                            "\$SSH_USER@${FRONTEND_EC2}" '
-                            
-                            docker pull ${IMAGE_NAME}:${IMAGE_TAG}
-
-                            docker stop flightfinder-frontend || true
-
-                            docker rm flightfinder-frontend || true
-
-                            docker run -d \
-                                --restart unless-stopped \
-                                --name flightfinder-frontend \
-                                -p 80:80 \
-                                ${IMAGE_NAME}:${IMAGE_TAG}
-
-                            docker ps
-                        '
-                    """
-                }
+                    docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                    docker logout
+                '''
             }
         }
     }
 
-    post {
+    stage('Connect to EKS') {
+        steps {
+            sh '''
+                set -e
+                aws eks update-kubeconfig \
+                  --region ${AWS_REGION} \
+                  --name ${EKS_CLUSTER}
 
-        success {
-            echo 'FlightFinder Frontend deployed successfully!'
+                kubectl get nodes
+            '''
         }
+    }
 
-        failure {
-            echo 'FlightFinder Frontend deployment failed!'
+    stage('Deploy to EKS') {
+        steps {
+            sh '''
+                set -e
+
+                kubectl create deployment ${APP_NAME} \
+                  --image=${IMAGE_NAME}:${IMAGE_TAG} \
+                  --dry-run=client -o yaml | kubectl apply -f -
+
+                kubectl set image deployment/${APP_NAME} \
+                  ${APP_NAME}=${IMAGE_NAME}:${IMAGE_TAG}
+
+                kubectl rollout status deployment/${APP_NAME} \
+                  --timeout=180s
+
+                kubectl expose deployment ${APP_NAME} \
+                  --name=${SERVICE_NAME} \
+                  --type=LoadBalancer \
+                  --port=80 \
+                  --target-port=80 \
+                  --dry-run=client -o yaml | kubectl apply -f -
+
+                kubectl get deployments
+                kubectl get pods -o wide
+                kubectl get svc ${SERVICE_NAME}
+            '''
         }
     }
 }
 
+post {
+    success {
+        echo 'SUCCESS: Frontend deployed to EKS.'
+    }
+    failure {
+        echo 'FAILED: Check the Jenkins Console Output.'
+    }
+}
+}

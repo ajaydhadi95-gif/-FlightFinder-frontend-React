@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { CITIES, searchFlights } from "./data";
 import "./App.css";
 
-  const API_BASE_URL = "http://65.2.171.100:8080/api/bookings";
+const API_BASE_URL =
+  import.meta.env.VITE_API_URL || "http://localhost:8080/api/bookings";
 
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
-const inr = (n) => `₹${n.toLocaleString("en-IN")}`;
+const inr = (n) => `₹${Number(n || 0).toLocaleString("en-IN")}`;
 const hm = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
 const cityName = (code) => CITIES.find((c) => c.code === code)?.name ?? code;
 
@@ -99,7 +100,7 @@ export default function App() {
     () => results && [...results].sort((a, b) => a.price - b.price)[0]?.id,
     [results]
   );
-  
+
   const fastestId = useMemo(
     () => results && [...results].sort((a, b) => a.duration - b.duration)[0]?.id,
     [results]
@@ -119,15 +120,25 @@ export default function App() {
       );
   }, [results, nonStop, airlineFilter, sortBy]);
 
+  // Backend ko flat payload bhejna hai (yahi maang raha hai)
   const book = async (passengerInfo) => {
     const pax = Number(form.passengers);
     const bookingPayload = {
       id: "FF" + Math.random().toString(36).slice(2, 8).toUpperCase(),
-      flight: selected,
+      flightId: selected.id,
+      airline: selected.airline,
+      flightNumber: selected.number,
+      origin: selected.from,
+      destination: selected.to,
+      travelDate: selected.date,
+      departure: selected.departure,
+      arrival: selected.arrival,
+      durationMin: selected.duration,
+      stops: selected.stops,
+      price: selected.price,
       passengers: pax,
       total: selected.price * pax,
       ...passengerInfo,
-      bookedAt: new Date().toISOString(),
     };
 
     try {
@@ -143,7 +154,9 @@ export default function App() {
         setConfirmation(savedBooking || bookingPayload);
         fetchBookings();
       } else {
-        alert("Booking database mein save nahi ho payi.");
+        const msg = await response.text();
+        console.error("Booking failed:", response.status, msg);
+        alert("Booking database mein save nahi ho payi.\n" + msg);
       }
     } catch (err) {
       console.error("API Error:", err);
@@ -361,6 +374,7 @@ export default function App() {
         </>
       )}
 
+      {/* My Bookings: backend ka nested flight object padhta hai (flat ka fallback bhi) */}
       {tab === "bookings" && (
         <main className="page">
           <h3 className="page-title">My Bookings</h3>
@@ -373,51 +387,62 @@ export default function App() {
               </button>
             </div>
           )}
-          {bookings.map((b) => (
-            <div className="ticket" key={b.id}>
-              <div className="ticket-main">
-                <div className="ticket-top">
-                  <span className="badge" style={{ background: AIRLINE_COLORS[b.flight?.airline] || "#2b3a8c" }}>
-                    {(b.flight?.airline || "IN").slice(0, 2).toUpperCase()}
-                  </span>
-                  <div>
-                    <strong>
-                      {cityName(b.flight?.from || b.from)} → {cityName(b.flight?.to || b.to)}
-                    </strong>
-                    <small>
-                      {b.flight?.airline} {b.flight?.number} · {b.flight?.date}
-                    </small>
+          {bookings.map((b) => {
+            const fl = b.flight || {
+              airline: b.airline,
+              number: b.flightNumber,
+              from: b.origin,
+              to: b.destination,
+              date: b.travelDate,
+              departure: b.departure,
+              arrival: b.arrival,
+            };
+            return (
+              <div className="ticket" key={b.id}>
+                <div className="ticket-main">
+                  <div className="ticket-top">
+                    <span className="badge" style={{ background: AIRLINE_COLORS[fl.airline] || "#2b3a8c" }}>
+                      {(fl.airline || "IN").slice(0, 2).toUpperCase()}
+                    </span>
+                    <div>
+                      <strong>
+                        {cityName(fl.from)} → {cityName(fl.to)}
+                      </strong>
+                      <small>
+                        {fl.airline} {fl.number} · {fl.date}
+                      </small>
+                    </div>
+                  </div>
+                  <div className="ticket-info">
+                    <div>
+                      <small>Departure</small>
+                      <b>{fl.departure}</b>
+                    </div>
+                    <div>
+                      <small>Arrival</small>
+                      <b>{fl.arrival}</b>
+                    </div>
+                    <div>
+                      <small>Passenger</small>
+                      <b>{b.name}</b>
+                    </div>
+                    <div>
+                      <small>Seats</small>
+                      <b>{b.passengers}</b>
+                    </div>
                   </div>
                 </div>
-                <div className="ticket-info">
-                  <div>
-                    <small>Departure</small>
-                    <b>{b.flight?.departure || "10:00"}</b>
-                  </div>
-                  <div>
-                    <small>Arrival</small>
-                    <b>{b.flight?.arrival || "12:00"}</b>
-                  </div>
-                  <div>
-                    <small>Passenger</small>
-                    <b>{b.name || b.passengerName}</b>
-                  </div>
-                  <div>
-                    <small>Seats</small>
-                    <b>{b.passengers || b.seats}</b>
-                  </div>
+                <div className="ticket-stub">
+                  <small>Booking ID</small>
+                  <strong>{b.id}</strong>
+                  <b className="amount">{inr(b.total)}</b>
+                  <button className="danger" onClick={() => cancel(b.id)}>
+                    Cancel
+                  </button>
                 </div>
               </div>
-              <div className="ticket-stub">
-                <small>Booking ID</small>
-                <strong>{b.id}</strong>
-                <b className="amount">{inr(b.total || b.price || 0)}</b>
-                <button className="danger" onClick={() => cancel(b.id)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </main>
       )}
 
@@ -430,6 +455,7 @@ export default function App() {
         />
       )}
 
+      {/* Confirmation popup: nested ya flat dono chalega */}
       {confirmation && (
         <div className="overlay" onClick={() => setConfirmation(null)}>
           <div className="modal success" onClick={(e) => e.stopPropagation()}>
@@ -439,11 +465,12 @@ export default function App() {
               Booking ID: <strong>{confirmation.id}</strong>
             </p>
             <p>
-              {cityName(confirmation.flight?.from || confirmation.from)} → {cityName(confirmation.flight?.to || confirmation.to)} ·{" "}
-              {confirmation.flight?.date || confirmation.date}
+              {cityName(confirmation.flight?.from || confirmation.origin)} →{" "}
+              {cityName(confirmation.flight?.to || confirmation.destination)} ·{" "}
+              {confirmation.flight?.date || confirmation.travelDate}
             </p>
             <p className="total">
-              Total paid: <b>{inr(confirmation.total || confirmation.price || 0)}</b>
+              Total paid: <b>{inr(confirmation.total)}</b>
             </p>
             <button
               className="primary"
