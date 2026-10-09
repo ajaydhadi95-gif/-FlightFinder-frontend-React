@@ -1335,6 +1335,345 @@ AWS Load Balancer
    v
 End User
 ```
+# Jenkins to EKS Kubeconfig Setup
+
+## 1. Purpose
+
+Jenkins needs access to the Amazon EKS cluster to execute Kubernetes commands such as:
+
+```bash
+kubectl get nodes
+kubectl get pods
+kubectl apply
+kubectl set image
+kubectl rollout status
+```
+
+During the setup, we found that:
+
+* The **Ubuntu user** had the correct EKS kubeconfig.
+* The **Jenkins user** did not have a kubeconfig under `/var/lib/jenkins/.kube/`.
+* Therefore, Jenkins could not access the EKS cluster using `kubectl`.
+
+We fixed this by copying the working kubeconfig to the Jenkins user's `.kube` directory and assigning the correct permissions.
+
+---
+
+# 2. Verify Ubuntu User Kubeconfig
+
+First, we verified the Kubernetes configuration for the Ubuntu user:
+
+```bash
+kubectl config view --minify
+```
+
+### Purpose
+
+This verifies the currently active Kubernetes context and confirms that the Ubuntu user has a valid EKS kubeconfig.
+
+---
+
+# 3. Check Jenkins Kubeconfig
+
+We checked whether Jenkins had its own Kubernetes configuration:
+
+```bash
+sudo -u jenkins ls -la /var/lib/jenkins/.kube/
+```
+
+We also checked the Kubernetes configuration as the Jenkins user:
+
+```bash
+sudo -u jenkins kubectl config view --minify
+```
+
+### Result
+
+The Jenkins user's kubeconfig was missing.
+
+Therefore, Jenkins could not use `kubectl` to communicate with the EKS cluster.
+
+---
+
+# 4. Create Jenkins Kubernetes Directory
+
+Create the `.kube` directory for Jenkins:
+
+```bash
+sudo mkdir -p /var/lib/jenkins/.kube
+```
+
+### Purpose
+
+Creates the directory where the Jenkins user's Kubernetes configuration will be stored.
+
+Directory:
+
+```text
+/var/lib/jenkins/.kube/
+```
+
+---
+
+# 5. Copy the EKS Kubeconfig
+
+Copy the working Ubuntu kubeconfig to the Jenkins user's directory:
+
+```bash
+sudo cp /home/ubuntu/.kube/config /var/lib/jenkins/.kube/config
+```
+
+### Purpose
+
+This gives Jenkins access to the same EKS cluster configuration that was already working for the Ubuntu user.
+
+Flow:
+
+```text
+Ubuntu User
+/home/ubuntu/.kube/config
+          |
+          | Copy
+          v
+Jenkins User
+/var/lib/jenkins/.kube/config
+```
+
+---
+
+# 6. Change File Ownership
+
+Assign ownership of the Kubernetes configuration to Jenkins:
+
+```bash
+sudo chown -R jenkins:jenkins /var/lib/jenkins/.kube
+```
+
+### Purpose
+
+Ensures that the Jenkins user can read and use the kubeconfig file.
+
+---
+
+# 7. Secure the Kubernetes Directory
+
+Set directory permissions:
+
+```bash
+sudo chmod 700 /var/lib/jenkins/.kube
+```
+
+### Purpose
+
+Allows only the Jenkins user to access the `.kube` directory.
+
+---
+
+# 8. Secure the Kubeconfig File
+
+Set the kubeconfig file permissions:
+
+```bash
+sudo chmod 600 /var/lib/jenkins/.kube/config
+```
+
+### Purpose
+
+Allows only the Jenkins user to read and modify the kubeconfig file.
+
+Expected permission:
+
+```text
+-rw------- jenkins jenkins config
+```
+
+---
+
+# 9. Test Jenkins to EKS Connectivity
+
+Now we tested EKS access specifically as the Jenkins user:
+
+```bash
+sudo -u jenkins env KUBECONFIG=/var/lib/jenkins/.kube/config kubectl get nodes
+```
+
+### Purpose
+
+This verifies that the Jenkins user can authenticate to the EKS cluster and retrieve worker nodes.
+
+Expected output:
+
+```text
+NAME                                             STATUS
+ip-10-0-11-209.ap-south-1.compute.internal     Ready
+ip-10-0-12-19.ap-south-1.compute.internal       Ready
+```
+
+### Result
+
+Both EKS worker nodes were in:
+
+```text
+Ready
+```
+
+This confirmed that Jenkins could successfully communicate with the EKS cluster.
+
+---
+
+# 10. Verify Kubernetes Pod Access
+
+We also tested Kubernetes resource access:
+
+```bash
+sudo -u jenkins env KUBECONFIG=/var/lib/jenkins/.kube/config kubectl get pods -A
+```
+
+### Purpose
+
+The `-A` option means **all namespaces**.
+
+This confirms that Jenkins can access Kubernetes resources, not just the EKS nodes.
+
+---
+
+# 11. Verify Jenkins Kubernetes Context
+
+We verified the active Kubernetes context from the Jenkins user:
+
+```bash
+sudo -u jenkins env KUBECONFIG=/var/lib/jenkins/.kube/config kubectl config view --minify
+```
+
+### Purpose
+
+Confirms that Jenkins is using the expected EKS cluster and Kubernetes context.
+
+---
+
+# 12. Configure Jenkins Pipeline
+
+The Jenkins pipeline can explicitly use the Jenkins kubeconfig:
+
+```bash
+export KUBECONFIG=/var/lib/jenkins/.kube/config
+```
+
+For example:
+
+```groovy
+stage('Connect to EKS') {
+    steps {
+        sh '''
+            export KUBECONFIG=/var/lib/jenkins/.kube/config
+
+            kubectl get nodes
+            kubectl get pods -A
+        '''
+    }
+}
+```
+
+### Purpose
+
+This ensures that every `kubectl` command executed by the Jenkins pipeline uses:
+
+```text
+/var/lib/jenkins/.kube/config
+```
+
+---
+
+# 13. Complete Jenkins EKS Verification
+
+Use the following commands whenever Jenkins-to-EKS connectivity needs to be verified:
+
+### Check kubeconfig directory
+
+```bash
+sudo -u jenkins ls -la /var/lib/jenkins/.kube/
+```
+
+### Check Kubernetes context
+
+```bash
+sudo -u jenkins env KUBECONFIG=/var/lib/jenkins/.kube/config kubectl config view --minify
+```
+
+### Check EKS nodes
+
+```bash
+sudo -u jenkins env KUBECONFIG=/var/lib/jenkins/.kube/config kubectl get nodes
+```
+
+### Check Kubernetes pods
+
+```bash
+sudo -u jenkins env KUBECONFIG=/var/lib/jenkins/.kube/config kubectl get pods -A
+```
+
+---
+
+# 14. Final Verification
+
+After completing the configuration, the following conditions were confirmed:
+
+```text
+✓ Ubuntu user had a working EKS kubeconfig
+✓ Jenkins .kube directory was created
+✓ EKS kubeconfig was copied to Jenkins
+✓ Jenkins ownership was configured
+✓ .kube directory permissions were secured
+✓ kubeconfig file permissions were secured
+✓ Jenkins could authenticate to EKS
+✓ EKS worker nodes were visible to Jenkins
+✓ EKS worker nodes were Ready
+✓ Jenkins could access Kubernetes pods
+✓ Jenkins was ready to deploy the frontend to EKS
+```
+
+---
+
+# 15. Role in the Frontend Deployment
+
+This setup was an important prerequisite for the frontend CI/CD pipeline.
+
+The complete deployment flow was:
+
+```text
+GitHub
+   |
+   v
+Jenkins
+   |
+   +--> Checkout Frontend
+   |
+   +--> Build Docker Image
+   |
+   +--> Push Image to Docker Hub
+   |
+   +--> Configure KUBECONFIG
+   |       |
+   |       v
+   |   /var/lib/jenkins/.kube/config
+   |       |
+   |       v
+   |   Amazon EKS
+   |
+   +--> Create/Update Frontend Deployment
+   |
+   +--> Update Docker Image
+   |
+   +--> Rollout Status
+   |
+   +--> Kubernetes LoadBalancer Service
+   |
+   v
+AWS Load Balancer
+   |
+   v
+End User
+```
 
 ## Key Commands Used
 
@@ -1369,7 +1708,6 @@ sudo -u jenkins env KUBECONFIG=/var/lib/jenkins/.kube/config kubectl get pods -A
 # Verify Jenkins Kubernetes context
 sudo -u jenkins env KUBECONFIG=/var/lib/jenkins/.kube/config kubectl config view --minify
 ```
-
 
 
 ---
