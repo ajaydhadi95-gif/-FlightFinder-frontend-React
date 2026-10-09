@@ -18,7 +18,7 @@ stages {
     stage('Checkout') {
         steps {
             git branch: 'main',
-                url: 'https://github.com/ajaydhadi95-gif/React_Fronend.git'
+                url: 'https://github.com/ajaydhadi95-gif/FlightFinder-Application_frontend.git'
         }
     }
 
