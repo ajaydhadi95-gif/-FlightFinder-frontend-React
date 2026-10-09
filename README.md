@@ -14,7 +14,7 @@
 
 <img src="docs/images/user-flow.gif" alt="Live user flow: browser to ELB to Service to Pod and back" width="900"/>
 
-![Uploading user-flow.gif…]()
+   ![Uploading user-flow.gif…]()
 
 
 <sub>👆 Live user flow — a visitor's request travelling to the Pod and the response coming back.</sub>
