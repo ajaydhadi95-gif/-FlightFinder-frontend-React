@@ -20,37 +20,7 @@
 
 ---
 
-<!DOCTYPE html>
-<html lang="hi">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Live AWS Infrastructure - devops-vpc</title>
-<style>
-:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
---bg:#f8fafc;--card:#fff;--tx:#0f172a;--mu:#64748b;--ln:#cbd5e1;--vpc:#eef2ff;--pub:#e0f2fe;--prv:#dcfce7;--db:#f3e8ff;
---c1:#0284c7;--c2:#16a34a;--c3:#7c3aed;--c4:#ea580c;--c5:#64748b}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1220;--card:#1e293b;--tx:#e2e8f0;--mu:#94a3b8;--ln:#334155;--vpc:#111a33;--pub:#0c2a3d;--prv:#0f2e22;--db:#2a1a45;--c1:#38bdf8;--c2:#4ade80;--c3:#a78bfa;--c4:#fb923c;--c5:#94a3b8}}
-:root[data-theme="dark"]{--bg:#0b1220;--card:#1e293b;--tx:#e2e8f0;--mu:#94a3b8;--ln:#334155;--vpc:#111a33;--pub:#0c2a3d;--prv:#0f2e22;--db:#2a1a45;--c1:#38bdf8;--c2:#4ade80;--c3:#a78bfa;--c4:#fb923c;--c5:#94a3b8}
-html{scroll-padding-top:env(safe-area-inset-top,0px)}
-body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-main{max-width:1000px;margin:0 auto;padding:16px}
-h1{font-size:1.25rem;margin:4px 0}
-p.sub{color:var(--mu);margin:0 0 12px;font-size:.9rem}
-.wrap{overflow-x:auto;background:var(--card);border:1px solid var(--ln);border-radius:14px;padding:6px}
-svg{display:block;min-width:720px;width:100%;height:auto}
-svg text{fill:var(--tx);font-family:inherit}
-.t{font-size:12px;font-weight:700}.s{font-size:10px;fill:var(--mu)}
-.box{fill:var(--card);stroke:var(--ln);stroke-width:1.5}
-.flows{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px}
-.f{background:var(--card);border:1px solid var(--ln);border-radius:12px;padding:10px 12px;font-size:.85rem;line-height:1.4}
-.f b{display:flex;align-items:center;gap:6px;margin-bottom:3px}
-.d{width:10px;height:10px;border-radius:50%;display:inline-block}
-button{margin-top:10px;background:var(--card);color:var(--tx);border:1px solid var(--ln);border-radius:8px;padding:6px 12px;cursor:pointer}
-</style>
-</head>
-<body>
-<main>
+
 <h1>☁️ Live AWS Infrastructure — devops-vpc (ap-south-1)</h1>
 <p class="sub">Terraform state se bana: user kaise andar aata hai, response kaise wapas jaata hai, DB aur internet tak ka raasta.</p>
 <div class="wrap">
